@@ -37,12 +37,12 @@ https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/ge
 
 ### 1. Требования
 
-Для работы проекта необходим **Python 3.12+**.
+Для работы проекта необходим **Python 3.12+** и Poetry.
 
 ### 2. Установка зависимостей
 
 ``` bash
-pip install -r requirements.txt
+poetry install
 ```
 ### 3. Запуск
 
@@ -58,13 +58,11 @@ python main.py
 ### 1. Установка PyInstaller
 
 ``` bash
-pip install pyinstaller
+poetry install
 ```
 
 ### 2. Команда сборки
 
 ``` bash
-pyinstaller --name "RealitySNIHunter" --onefile --windowed ^
---add-data "style.qss;." ^
-main.py
+pyinstaller RealitySNIHunter.spec
 ```
