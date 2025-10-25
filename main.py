@@ -1,26 +1,24 @@
+"""Main entry point for RealitySNIHunter."""
+
 import sys
-import os
 from PySide6.QtWidgets import QApplication
 from ui.main_window import RealitySNIHunterApp
 
 
-def load_qss_file(app, path="style.qss"):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            app.setStyleSheet(f.read())
-    except FileNotFoundError:
-        print(f"Ошибка: Файл стилей {path} не найден.")
-
-
-if __name__ == "__main__":
-    if os.getcwd() not in sys.path:
-        sys.path.append(os.getcwd())
-
+def main():
     app = QApplication(sys.argv)
 
-    load_qss_file(app, "style.qss")
+    # Загрузка стилей
+    try:
+        with open('style.qss', 'r', encoding='utf-8') as f:
+            app.setStyleSheet(f.read())
+    except FileNotFoundError:
+        print("⚠️ Файл style.qss не найден, используется стандартная тема")
 
-    win = RealitySNIHunterApp()
-    win.show()
-
+    window = RealitySNIHunterApp()
+    window.show()
     sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()

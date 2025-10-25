@@ -20,7 +20,7 @@ from core.xray_verifier import XrayVerifier
 class RealitySNIHunterApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RealitySNIHunter v0.2.2b")
+        self.setWindowTitle("RealitySNIHunter v0.2.3")
         self.rows = []
         self.valid_snis = []
         self.current_ip_list = []
@@ -90,6 +90,15 @@ class RealitySNIHunterApp(QWidget):
         self.xray_workers_spin.setMaximum(10)
         self.xray_workers_spin.setValue(3)
         self.xray_workers_spin.setToolTip("Количество одновременных проверок SNI через Xray Core (рекомендуется 3-5)")
+
+        # Новый чекбокс для предварительной проверки
+        self.preliminary_check = QCheckBox("🔍 Включить предварительную TLS-проверку (фильтрация заблокированных SNI)")
+        self.preliminary_check.setChecked(True)
+        self.preliminary_check.setToolTip(
+            "Перед полной проверкой через Xray выполняется быстрая TLS-проверка,\n"
+            "которая отфильтровывает заблокированные SNI (сброс соединения).\n"
+            "Это значительно ускоряет процесс и улучшает результаты."
+        )
 
         self.start_btn = QPushButton("🚀 Старт сканирования")
         self.start_btn.clicked.connect(self.start_scan)
@@ -203,6 +212,9 @@ class RealitySNIHunterApp(QWidget):
         workers_layout.addWidget(self.xray_workers_spin)
         workers_layout.addStretch()
         vless_layout.addLayout(workers_layout)
+
+        # Добавление чекбокса предварительной проверки
+        vless_layout.addWidget(self.preliminary_check)
 
         vless_group.setLayout(vless_layout)
         main_tab_layout.addWidget(vless_group)
@@ -326,6 +338,14 @@ class RealitySNIHunterApp(QWidget):
             self.log_write(f"\n{'=' * 60}")
             self.log_write("🚀 ЗАПУСК ПРОВЕРКИ ЧЕРЕЗ XRAY CORE")
             self.log_write(f"📊 Всего SNI для проверки: {len(sni_list)}")
+
+            # Информация о предварительной проверке
+            if self.preliminary_check.isChecked():
+                self.log_write("🔍 Предварительная TLS-проверка: ВКЛЮЧЕНА")
+                self.log_write("   (заблокированные SNI будут отфильтрованы)")
+            else:
+                self.log_write("🔍 Предварительная TLS-проверка: ВЫКЛЮЧЕНА")
+
             self.log_write(f"{'=' * 60}\n")
 
             # Создаем верификатор
@@ -343,7 +363,8 @@ class RealitySNIHunterApp(QWidget):
                         self.xray_verifier.verify_sni_list(
                             self.vless_config,
                             sni_list,
-                            max_workers=self.xray_workers_spin.value()
+                            max_workers=self.xray_workers_spin.value(),
+                            enable_preliminary_check=self.preliminary_check.isChecked()
                         )
                     )
 
@@ -483,6 +504,7 @@ class RealitySNIHunterApp(QWidget):
         self.vless_input.setEnabled(not is_running)
         self.xray_enabled.setEnabled(not is_running)
         self.xray_workers_spin.setEnabled(not is_running)
+        self.preliminary_check.setEnabled(not is_running)
         self.start_btn.setText("🚀 Сканирование..." if is_running else "🚀 Старт сканирования")
 
     def start_scan(self):

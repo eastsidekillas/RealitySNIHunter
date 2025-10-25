@@ -1,93 +1,240 @@
+/* RealitySNIHunter v0.2.3 Styles */
+
+/* Основные цвета */
 QWidget {
-    font-size: 10pt;
-    background-color: #333333;
-    color: #f0f0f0;
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 9pt;
 }
 
+/* Главное окно */
+QMainWindow {
+    background-color: #1e1e1e;
+}
+
+/* Вкладки */
+QTabWidget::pane {
+    border: 1px solid #3c3c3c;
+    background-color: #2b2b2b;
+}
+
+QTabBar::tab {
+    background-color: #3c3c3c;
+    color: #e0e0e0;
+    padding: 8px 16px;
+    border: 1px solid #3c3c3c;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+
+QTabBar::tab:selected {
+    background-color: #2b2b2b;
+    border-color: #32a8a0;
+}
+
+QTabBar::tab:hover {
+    background-color: #404040;
+}
+
+/* Группы */
 QGroupBox {
+    background-color: #2b2b2b;
+    border: 1px solid #3c3c3c;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 16px;
     font-weight: bold;
-    margin-top: 10px;
-    padding-top: 20px;
-    border: 1px solid #555555;
-    border-radius: 5px;
-    background-color: #2c2c2c;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
-    subcontrol-position: top center;
-    padding: 0 10px;
-    color: #AAAAAA;
+    subcontrol-position: top left;
+    padding: 0 8px;
+    color: #32a8a0;
 }
 
-QLineEdit, QTextEdit {
-    border: 1px solid #555555;
-    border-radius: 3px;
-    padding: 5px;
+/* Поля ввода */
+QLineEdit, QTextEdit, QSpinBox {
     background-color: #1e1e1e;
-    color: #f0f0f0;
-}
-QTextEdit {
-    font-family: Consolas;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    padding: 6px;
+    color: #e0e0e0;
+    selection-background-color: #32a8a0;
 }
 
+QLineEdit:focus, QTextEdit:focus, QSpinBox:focus {
+    border: 1px solid #32a8a0;
+}
+
+QLineEdit:disabled, QTextEdit:disabled, QSpinBox:disabled {
+    background-color: #252525;
+    color: #6c6c6c;
+}
+
+/* Кнопки */
 QPushButton {
-    padding: 8px 15px;
-    border-radius: 5px;
-    background-color: #007ACC;
-    color: white;
+    background-color: #32a8a0;
+    color: #ffffff;
     border: none;
-}
-QPushButton:hover {
-    background-color: #005f9e;
-}
-QPushButton:disabled {
-    background-color: #555555;
-    color: #aaaaaa;
-}
-
-QProgressBar {
-    text-align: center;
-    color: #ffffff;
-    border: 1px solid #555555;
-    border-radius: 5px;
-    background-color: #1e1e1e;
-}
-QProgressBar::chunk {
-    background-color: #4CAF50;
-    border-radius: 5px;
-}
-
-QTabWidget::pane {
-    border: 1px solid #555555;
-    background: #2c2c2c;
-}
-QTabBar::tab {
-    background: #444444;
-    color: #cccccc;
-    padding: 8px 15px;
-    border-top-left-radius: 5px;
-    border-top-right-radius: 5px;
-}
-QTabBar::tab:selected {
-    background: #2c2c2c;
-    color: #ffffff;
+    border-radius: 4px;
+    padding: 8px 16px;
     font-weight: bold;
 }
 
-QScrollBar:vertical, QScrollBar:horizontal {
-    border: 1px solid #444;
-    background: #222;
-    width: 10px;
-    margin: 0px 0px 0px 0px;
+QPushButton:hover {
+    background-color: #2d9589;
 }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #555;
+
+QPushButton:pressed {
+    background-color: #288278;
+}
+
+QPushButton:disabled {
+    background-color: #3c3c3c;
+    color: #6c6c6c;
+}
+
+/* Чекбоксы - ИСПРАВЛЕНО */
+QCheckBox {
+    spacing: 8px;
+    color: #e0e0e0;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #3c3c3c;
+    border-radius: 3px;
+    background-color: #1e1e1e;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #32a8a0;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #32a8a0;
+    border-color: #32a8a0;
+    image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEwIDNMNC41IDguNUwyIDYiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+Cjwvc3ZnPgo=);
+}
+
+QCheckBox::indicator:disabled {
+    background-color: #252525;
+    border-color: #2c2c2c;
+}
+
+/* SpinBox стрелки */
+QSpinBox::up-button, QSpinBox::down-button {
+    background-color: #3c3c3c;
+    border: none;
+    width: 16px;
+}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #4c4c4c;
+}
+
+QSpinBox::up-arrow {
+    image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iNiIgdmlld0JveD0iMCAwIDEwIDYiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik0xIDVMNSAxTDkgNSIgc3Ryb2tlPSIjZTBlMGUwIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K);
+}
+
+QSpinBox::down-arrow {
+    image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAiIGhlaWdodD0iNiIgdmlld0JveD0iMCAwIDEwIDYiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik0xIDFMNSA1TDkgMSIgc3Ryb2tlPSIjZTBlMGUwIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K);
+}
+
+/* Прогресс бар */
+QProgressBar {
+    background-color: #1e1e1e;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    text-align: center;
+    color: #e0e0e0;
+}
+
+QProgressBar::chunk {
+    background-color: #32a8a0;
+    border-radius: 3px;
+}
+
+/* Метки */
+QLabel {
+    color: #e0e0e0;
+    background-color: transparent;
+}
+
+/* Сепаратор */
+QFrame[frameShape="4"] {
+    background-color: #3c3c3c;
+    max-height: 1px;
+}
+
+/* Скроллбары */
+QScrollBar:vertical {
+    background-color: #2b2b2b;
+    width: 12px;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #4c4c4c;
     min-height: 20px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #5c5c5c;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    background-color: #2b2b2b;
+    height: 12px;
+    border: none;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #4c4c4c;
+    min-width: 20px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #5c5c5c;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+/* Таблицы */
+QTableWidget {
+    background-color: #1e1e1e;
+    alternate-background-color: #252525;
+    gridline-color: #3c3c3c;
+    border: 1px solid #3c3c3c;
     border-radius: 4px;
 }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+
+QTableWidget::item {
+    padding: 4px;
+    color: #e0e0e0;
+}
+
+QTableWidget::item:selected {
+    background-color: #32a8a0;
+    color: #ffffff;
+}
+
+QHeaderView::section {
+    background-color: #3c3c3c;
+    color: #e0e0e0;
+    padding: 6px;
     border: none;
-    background: none;
+    font-weight: bold;
 }
