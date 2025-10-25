@@ -13,7 +13,10 @@ a = Analysis(
         'core.networking',
         'core.xray_verifier',
         'aiohttp',
-        'aiohttp_socks'
+        'aiohttp_socks',
+        'asyncio',
+        'zipfile',
+        'tempfile'
     ],
     hookspath=[],
     hooksconfig={},

@@ -9,7 +9,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse, parse_qs
 
 import aiohttp
 from PySide6.QtCore import QObject, Signal
@@ -228,10 +227,10 @@ class XrayVerifier(QObject):
                 proxy = "socks5://127.0.0.1:10808"
                 try:
                     async with session.get(
-                            "http://www.gstatic.com/generate_204",
-                            proxy=proxy,
-                            timeout=aiohttp.ClientTimeout(total=timeout),
-                            allow_redirects=False
+                        "http://www.gstatic.com/generate_204",
+                        proxy=proxy,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                        allow_redirects=False
                     ) as response:
                         latency = (time.time() - start_time) * 1000  # Convert to ms
 
@@ -260,10 +259,10 @@ class XrayVerifier(QObject):
                         pass
 
     async def verify_sni_list(
-            self,
-            vless_config: str,
-            sni_list: List[str],
-            max_workers: int = 3
+        self,
+        vless_config: str,
+        sni_list: List[str],
+        max_workers: int = 3
     ) -> List[Dict]:
         """Verify list of SNIs using Xray Core."""
 
@@ -277,12 +276,19 @@ class XrayVerifier(QObject):
             self.progress_signal.emit("❌ Не удалось распарсить VLESS конфигурацию")
             return []
 
-        self.progress_signal.emit(f"🔍 Начало проверки {len(sni_list)} SNI через Xray Core...")
+        total_snis = len(sni_list)
+        self.progress_signal.emit(f"🔍 Начало проверки ВСЕХ {total_snis} SNI через Xray Core...")
+        self.progress_signal.emit(f"⚙️ Параллельных проверок: {max_workers}")
+        self.progress_signal.emit(f"⏱️ Примерное время: ~{(total_snis * 12) // max_workers // 60} мин\n")
 
         results = []
+        successful_count = 0
+        failed_count = 0
         semaphore = asyncio.Semaphore(max_workers)
 
         async def test_single_sni(sni: str, index: int) -> Optional[Dict]:
+            nonlocal successful_count, failed_count
+
             async with semaphore:
                 try:
                     # Create temporary config file
@@ -292,7 +298,10 @@ class XrayVerifier(QObject):
                     with open(config_path, 'w', encoding='utf-8') as f:
                         json.dump(xray_config, f, indent=2)
 
-                    self.progress_signal.emit(f"🧪 Тестирование {index + 1}/{len(sni_list)}: {sni}")
+                    progress_percent = (index / total_snis) * 100
+                    self.progress_signal.emit(
+                        f"🧪 [{index}/{total_snis}] ({progress_percent:.1f}%) Тестирование: {sni}"
+                    )
 
                     # Test connection
                     success, latency, status = await self._test_connection(str(config_path))
@@ -311,13 +320,21 @@ class XrayVerifier(QObject):
                     }
 
                     if success:
-                        self.progress_signal.emit(f"✅ {sni}: {latency:.0f}ms")
+                        successful_count += 1
+                        self.progress_signal.emit(
+                            f"✅ [{successful_count} успешных] {sni}: {latency:.0f}ms"
+                        )
                     else:
-                        self.progress_signal.emit(f"❌ {sni}: {status}")
+                        failed_count += 1
+                        if failed_count % 10 == 0:  # Логируем каждую 10-ю неудачу
+                            self.progress_signal.emit(
+                                f"❌ [{failed_count} неудач] Последний: {sni}: {status}"
+                            )
 
                     return result
 
                 except Exception as e:
+                    failed_count += 1
                     self.progress_signal.emit(f"⚠️ Ошибка при тестировании {sni}: {e}")
                     return {
                         'sni': sni,
@@ -327,14 +344,20 @@ class XrayVerifier(QObject):
                     }
 
         # Test all SNIs
-        tasks = [test_single_sni(sni, i) for i, sni in enumerate(sni_list)]
+        tasks = [test_single_sni(sni, i + 1) for i, sni in enumerate(sni_list)]
         results = await asyncio.gather(*tasks)
 
         # Filter and sort results
         valid_results = [r for r in results if r and r['success']]
         valid_results.sort(key=lambda x: x['latency'])
 
-        self.progress_signal.emit(f"\n✓ Проверка завершена: {len(valid_results)}/{len(sni_list)} успешных")
+        self.progress_signal.emit(f"\n{'='*60}")
+        self.progress_signal.emit(f"✅ ПРОВЕРКА ЗАВЕРШЕНА")
+        self.progress_signal.emit(f"{'='*60}")
+        self.progress_signal.emit(f"📊 Проверено: {total_snis} SNI")
+        self.progress_signal.emit(f"✅ Успешных: {len(valid_results)}")
+        self.progress_signal.emit(f"❌ Неудачных: {total_snis - len(valid_results)}")
+        self.progress_signal.emit(f"📈 Процент успеха: {(len(valid_results)/total_snis*100):.1f}%\n")
 
         return valid_results
 
