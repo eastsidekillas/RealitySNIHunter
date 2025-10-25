@@ -2,10 +2,11 @@ import sys
 import os
 import aiohttp
 import asyncio
+import threading
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout,
     QLineEdit, QHBoxLayout, QMessageBox, QTextEdit, QFileDialog,
-    QCheckBox, QProgressBar, QGroupBox, QTabWidget, QGridLayout, QFrame, QComboBox
+    QCheckBox, QProgressBar, QGroupBox, QTabWidget, QGridLayout, QFrame, QSpinBox
 )
 from PySide6.QtCore import QThread, Signal, Qt
 from core.workers import ScanWorker, SniCheckerWorker, GeoDataWorker, GeoIPDownloadWorker
@@ -13,12 +14,13 @@ from core.networking import (
     get_my_ip_async, auto_ip_range, save_rows_to_csv,
     pick_best_sni, load_geoip_db, close_geoip_db
 )
+from core.xray_verifier import XrayVerifier
 
 
 class RealitySNIHunterApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RealitySNIHunter v0.2")
+        self.setWindowTitle("RealitySNIHunter v0.2.2b")
         self.rows = []
         self.valid_snis = []
         self.current_ip_list = []
@@ -26,6 +28,8 @@ class RealitySNIHunterApp(QWidget):
         self.geo_worker = None
         self._ip_worker = None
         self.geoip_db_loaded = False
+        self.xray_verifier = None
+        self.vless_config = ""
         self._create_widgets()
         self._setup_ui()
         self.resize(1200, 800)
@@ -34,7 +38,6 @@ class RealitySNIHunterApp(QWidget):
         if load_geoip_db("data/Country.mmdb"):
             self.geoip_db_loaded = True
             self.geoip_status_label.setText("✅ GeoIP база загружена")
-
 
     def _create_widgets(self):
         self.ip_edit = QLineEdit()
@@ -72,6 +75,21 @@ class RealitySNIHunterApp(QWidget):
 
         self.geosite_url_edit = QTextEdit()
         self.geosite_url_edit.setPlaceholderText("Ссылки на geosite.dat (каждая с новой строки)")
+
+        # VLESS конфигурация
+        self.vless_input = QLineEdit()
+        self.vless_input.setPlaceholderText("vless://uuid@server:port?security=reality&sni=...")
+
+        self.xray_enabled = QCheckBox("✅ Включить проверку через Xray Core (проверяются ВСЕ найденные SNI)")
+        self.xray_enabled.setChecked(True)
+        self.xray_enabled.setToolTip(
+            "Если включено, все найденные SNI будут проверены через Xray Core, затем выбраны топ-20 лучших")
+
+        self.xray_workers_spin = QSpinBox()
+        self.xray_workers_spin.setMinimum(1)
+        self.xray_workers_spin.setMaximum(10)
+        self.xray_workers_spin.setValue(3)
+        self.xray_workers_spin.setToolTip("Количество одновременных проверок SNI через Xray Core (рекомендуется 3-5)")
 
         self.start_btn = QPushButton("🚀 Старт сканирования")
         self.start_btn.clicked.connect(self.start_scan)
@@ -169,6 +187,26 @@ class RealitySNIHunterApp(QWidget):
         settings_group.setLayout(settings_layout)
         main_tab_layout.addWidget(settings_group)
 
+        # VLESS группа с улучшенной интеграцией
+        vless_group = QGroupBox("⚙️ Конфигурация для проверки Xray Core")
+        vless_layout = QVBoxLayout()
+
+        vless_label = QLabel("VLESS конфигурация (для проверки SNI через Xray Core):")
+        vless_layout.addWidget(vless_label)
+        vless_layout.addWidget(self.vless_input)
+        vless_layout.addWidget(self.xray_enabled)
+
+        # Параметры воркеров
+        workers_layout = QHBoxLayout()
+        workers_label = QLabel("Параллельных проверок:")
+        workers_layout.addWidget(workers_label)
+        workers_layout.addWidget(self.xray_workers_spin)
+        workers_layout.addStretch()
+        vless_layout.addLayout(workers_layout)
+
+        vless_group.setLayout(vless_layout)
+        main_tab_layout.addWidget(vless_group)
+
         control_status_layout = QVBoxLayout()
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.start_btn)
@@ -265,8 +303,144 @@ class RealitySNIHunterApp(QWidget):
 
         self.log_write("\n--- АНАЛИЗ ЗАВЕРШЕН ---")
 
-        # переключаем на итоговые результы, тк поменяли виджеты
-        self.result_tab_widget.setCurrentIndex(1)
+        # Запуск Xray проверки если включена
+        if self.xray_enabled.isChecked() and self.vless_config:
+            self.start_xray_verification()
+        else:
+            # переключаем на итоговые результаты
+            self.result_tab_widget.setCurrentIndex(1)
+
+    def start_xray_verification(self):
+        """Запуск проверки Xray Core для ВСЕХ найденных SNI."""
+        try:
+            # Берем ВСЕ найденные SNI из self.valid_snis
+            all_snis = self.valid_snis
+
+            if not all_snis:
+                self.log_write("⚠️ Нет SNI для проверки через Xray Core")
+                self.result_tab_widget.setCurrentIndex(1)
+                return
+
+            sni_list = [sni for sni in all_snis if isinstance(sni, str)]
+
+            self.log_write(f"\n{'=' * 60}")
+            self.log_write("🚀 ЗАПУСК ПРОВЕРКИ ЧЕРЕЗ XRAY CORE")
+            self.log_write(f"📊 Всего SNI для проверки: {len(sni_list)}")
+            self.log_write(f"{'=' * 60}\n")
+
+            # Создаем верификатор
+            self.xray_verifier = XrayVerifier()
+            self.xray_verifier.progress_signal.connect(self.log_write)
+
+            # Запускаем проверку в отдельном потоке
+            def run_verification():
+                import asyncio
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                    verified_results = loop.run_until_complete(
+                        self.xray_verifier.verify_sni_list(
+                            self.vless_config,
+                            sni_list,
+                            max_workers=self.xray_workers_spin.value()
+                        )
+                    )
+
+                    loop.close()
+
+                    # Обновляем результаты
+                    self.update_xray_results(verified_results, len(sni_list))
+
+                except Exception as e:
+                    self.log_write(f"❌ Ошибка проверки Xray: {e}")
+                    import traceback
+                    self.log_write(traceback.format_exc())
+                    self.result_tab_widget.setCurrentIndex(1)
+                finally:
+                    if self.xray_verifier:
+                        self.xray_verifier.cleanup()
+
+            thread = threading.Thread(target=run_verification, daemon=True)
+            thread.start()
+
+        except Exception as e:
+            self.log_write(f"❌ Ошибка запуска Xray проверки: {e}")
+            import traceback
+            self.log_write(traceback.format_exc())
+            self.result_tab_widget.setCurrentIndex(1)
+
+    def update_xray_results(self, verified_results, total_checked):
+        """Обновление UI с результатами проверки Xray и выбор ТОП-20."""
+        try:
+            self.log_write(f"\n{'=' * 60}")
+            self.log_write("✅ РЕЗУЛЬТАТЫ ПРОВЕРКИ XRAY CORE")
+            self.log_write(f"{'=' * 60}\n")
+
+            if not verified_results:
+                self.log_write("❌ Ни один SNI не прошел проверку через Xray Core")
+                self.final_sni_output.append("\n" + "=" * 60)
+                self.final_sni_output.append("❌ XRAY ПРОВЕРКА: Ни один SNI не прошел проверку")
+                self.final_sni_output.append("=" * 60 + "\n")
+                self.result_tab_widget.setCurrentIndex(1)
+                return
+
+            successful = len(verified_results)
+
+            self.log_write(f"📊 Статистика проверки:")
+            self.log_write(f"   • Проверено SNI: {total_checked}")
+            self.log_write(f"   • Успешных: {successful}")
+            self.log_write(f"   • Процент успеха: {(successful / total_checked * 100):.1f}%\n")
+
+            # Выбираем ТОП-20 из проверенных (уже отсортированы по латентности)
+            top_20_results = verified_results[:20]
+
+            self.log_write(f"🎯 Выбрано ТОП-20 лучших SNI из {successful} успешных:\n")
+
+            # Добавляем результаты в итоговый вывод
+            self.final_sni_output.append("\n" + "=" * 60)
+            self.final_sni_output.append(f"✅ ПРОВЕРЕНО ЧЕРЕЗ XRAY CORE")
+            self.final_sni_output.append(
+                f"Проверено: {total_checked} | Успешно: {successful} | Процент: {(successful / total_checked * 100):.1f}%")
+            self.final_sni_output.append("=" * 60 + "\n")
+
+            self.final_sni_output.append("🎯 **ТОП-20 проверенных SNI (отсортировано по задержке):**\n")
+
+            for i, result in enumerate(top_20_results, 1):
+                sni = result['sni']
+                latency = result['latency']
+
+                display_text = f"{i:2d}. {sni:40s} - {latency:6.0f}ms"
+                self.final_sni_output.append(display_text)
+                self.log_write(display_text)
+
+            # Если успешных меньше 20
+            if successful < 20:
+                warning = f"\n⚠️ Найдено только {successful} рабочих SNI (меньше 20)"
+                self.log_write(warning)
+                self.final_sni_output.append(warning)
+
+            # Дополнительная статистика по всем успешным
+            if successful > 20:
+                self.log_write(f"\n📈 Статистика по всем {successful} успешным SNI:")
+                self.log_write(f"   • Минимальная задержка: {verified_results[0]['latency']:.0f}ms")
+                self.log_write(f"   • Максимальная задержка: {verified_results[-1]['latency']:.0f}ms")
+                avg_latency = sum(r['latency'] for r in verified_results) / len(verified_results)
+                self.log_write(f"   • Средняя задержка: {avg_latency:.0f}ms")
+                self.log_write(f"\n💡 Показаны топ-20 из {successful} успешных SNI")
+
+                self.final_sni_output.append(f"\n💡 Показаны топ-20 из {successful} успешных SNI")
+
+            self.final_sni_output.append("\n" + "=" * 60 + "\n")
+
+            # Переключаемся на вкладку результатов
+            self.result_tab_widget.setCurrentIndex(1)
+
+        except Exception as e:
+            self.log_write(f"❌ Ошибка обновления результатов: {e}")
+            import traceback
+            self.log_write(traceback.format_exc())
+            self.result_tab_widget.setCurrentIndex(1)
 
     def fill_my_ip(self):
         self.status_label.setText("Запрос вашего IP...")
@@ -306,7 +480,10 @@ class RealitySNIHunterApp(QWidget):
         self.geoip_url_edit.setEnabled(not is_running)
         self.geosite_url_edit.setEnabled(not is_running)
         self.download_geoip_btn.setEnabled(not is_running)
-        self.start_btn.setText("🚀 Сканирование...") if is_running else self.start_btn.setText("🚀 Старт сканирования")
+        self.vless_input.setEnabled(not is_running)
+        self.xray_enabled.setEnabled(not is_running)
+        self.xray_workers_spin.setEnabled(not is_running)
+        self.start_btn.setText("🚀 Сканирование..." if is_running else "🚀 Старт сканирования")
 
     def start_scan(self):
         ip = self.ip_edit.text().strip()
@@ -323,6 +500,21 @@ class RealitySNIHunterApp(QWidget):
             )
             if reply == QMessageBox.No:
                 return
+
+        # Проверка VLESS конфигурации если включена Xray проверка
+        if self.xray_enabled.isChecked():
+            self.vless_config = self.vless_input.text().strip()
+            if not self.vless_config:
+                reply = QMessageBox.warning(
+                    self,
+                    "Внимание",
+                    "Для проверки через Xray Core необходимо указать VLESS конфигурацию.\n\nОтключить проверку Xray и продолжить?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    self.xray_enabled.setChecked(False)
+                else:
+                    return
 
         self.set_running_state(True)
         self.rows = []
@@ -419,6 +611,8 @@ class RealitySNIHunterApp(QWidget):
             QMessageBox.information(self, "Готово", f"Сохранено в {path}")
 
     def closeEvent(self, event):
-        """Закрываем базу GeoIP при выходе"""
+        """Закрываем базу GeoIP и очищаем Xray при выходе"""
         close_geoip_db()
+        if self.xray_verifier:
+            self.xray_verifier.cleanup()
         event.accept()

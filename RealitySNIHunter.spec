@@ -1,12 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
     datas=[('style.qss', '.')],
-    hiddenimports=['ui', 'ui.main_window', 'core', 'core.workers', 'core.networking'],
+    hiddenimports=[
+        'ui',
+        'ui.main_window',
+        'core',
+        'core.workers',
+        'core.networking',
+        'core.xray_verifier',
+        'aiohttp',
+        'aiohttp_socks',
+        'asyncio',
+        'zipfile',
+        'tempfile'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -14,6 +25,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
