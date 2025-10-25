@@ -5,33 +5,37 @@ import asyncio
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout,
     QLineEdit, QHBoxLayout, QMessageBox, QTextEdit, QFileDialog,
-    QCheckBox, QProgressBar, QGroupBox, QTabWidget, QGridLayout, QFrame
+    QCheckBox, QProgressBar, QGroupBox, QTabWidget, QGridLayout, QFrame, QComboBox
 )
 from PySide6.QtCore import QThread, Signal, Qt
-
-from core.workers import ScanWorker, SniCheckerWorker, GeoDataWorker
-from core.networking import get_my_ip_async, auto_ip_range, save_rows_to_csv, pick_best_sni
+from core.workers import ScanWorker, SniCheckerWorker, GeoDataWorker, GeoIPDownloadWorker
+from core.networking import (
+    get_my_ip_async, auto_ip_range, save_rows_to_csv, 
+    pick_best_sni, load_geoip_db, close_geoip_db
+)
 
 
 class RealitySNIHunterApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RealitySNIHunter")
-
-
+        self.setWindowTitle("RealitySNIHunter v0.2")
         self.rows = []
         self.valid_snis = []
         self.current_ip_list = []
         self.current_domain_list = []
         self.geo_worker = None
         self._ip_worker = None
+        self.geoip_db_loaded = False
         self._create_widgets()
         self._setup_ui()
-
         self.resize(1200, 800)
+        
+        # Попытка загрузить существующую базу при запуске
+        if load_geoip_db("Country.mmdb"):
+            self.geoip_db_loaded = True
+            self.geoip_status_label.setText("✅ GeoIP база загружена")
 
     # --- UI Setup Methods ---
-
     def _create_widgets(self):
         self.ip_edit = QLineEdit()
         self.ip_edit.setPlaceholderText("IP (например, 1.1.1.1) для авто-диапазона и проверки SNI")
@@ -47,6 +51,20 @@ class RealitySNIHunterApp(QWidget):
 
         self.ext_range_cb = QCheckBox("Расширенный диапазон (/24, до 250 IP)")
         self.ext_range_cb.setChecked(False)
+
+        # GeoIP Country.mmdb
+        self.geoip_mmdb_url_edit = QLineEdit("https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb")
+        self.geoip_mmdb_url_edit.setPlaceholderText("Ссылка на Country.mmdb")
+        
+        self.download_geoip_btn = QPushButton("📥 Загрузить GeoIP базу")
+        self.download_geoip_btn.clicked.connect(self.download_geoip_db)
+        
+        self.geoip_status_label = QLabel("❌ GeoIP база не загружена")
+        
+        # Фильтр по стране
+        self.country_filter_label = QLabel("Фильтр по странам (для топ-20):")
+        self.country_filter_edit = QLineEdit()
+        self.country_filter_edit.setPlaceholderText("Коды стран через запятую (RU,US,DE) или оставьте пустым")
 
         self.geoip_url_edit = QTextEdit()
         self.geoip_url_edit.setPlaceholderText("Ссылки на geoip.dat (каждая с новой строки)")
@@ -83,21 +101,37 @@ class RealitySNIHunterApp(QWidget):
 
         settings_group = QGroupBox("Параметры Сканирования")
         settings_layout = QGridLayout()
-
         settings_layout.addWidget(QLabel("IP / Диапазон:"), 0, 0)
         settings_layout.addWidget(self.ip_edit, 0, 1)
         settings_layout.addWidget(self.myip_btn, 0, 2)
-
         settings_layout.addWidget(QLabel("Порт:"), 1, 0)
         settings_layout.addWidget(self.port_edit, 1, 1)
-
         settings_layout.addWidget(QLabel("Потоки:"), 2, 0)
         settings_layout.addWidget(self.concurrent_edit, 2, 1)
-
         settings_layout.addWidget(self.ext_range_cb, 3, 1, 1, 2)
-
         settings_group.setLayout(settings_layout)
         main_layout.addWidget(settings_group)
+
+        # GeoIP Country.mmdb секция
+        geoip_mmdb_group = QGroupBox("🌍 GeoIP Country Database (для определения стран)")
+        geoip_mmdb_layout = QVBoxLayout()
+        
+        url_layout = QHBoxLayout()
+        url_layout.addWidget(QLabel("Ссылка:"))
+        url_layout.addWidget(self.geoip_mmdb_url_edit)
+        url_layout.addWidget(self.download_geoip_btn)
+        
+        geoip_mmdb_layout.addLayout(url_layout)
+        geoip_mmdb_layout.addWidget(self.geoip_status_label)
+        
+        # Фильтр по стране
+        country_filter_layout = QHBoxLayout()
+        country_filter_layout.addWidget(self.country_filter_label)
+        country_filter_layout.addWidget(self.country_filter_edit)
+        geoip_mmdb_layout.addLayout(country_filter_layout)
+        
+        geoip_mmdb_group.setLayout(geoip_mmdb_layout)
+        main_layout.addWidget(geoip_mmdb_group)
 
         geo_group = QGroupBox("Дополнительные Источники")
         geo_layout = QHBoxLayout()
@@ -118,21 +152,42 @@ class RealitySNIHunterApp(QWidget):
         main_layout.addWidget(geo_group)
 
         control_status_layout = QVBoxLayout()
-
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.start_btn)
         button_layout.addWidget(self.save_btn)
         control_status_layout.addLayout(button_layout)
-
         control_status_layout.addWidget(self.status_label)
         control_status_layout.addWidget(self.progress)
-
         main_layout.addLayout(control_status_layout)
 
         main_layout.addWidget(self.tab_widget)
 
+    def download_geoip_db(self):
+        url = self.geoip_mmdb_url_edit.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Ошибка", "Укажите ссылку на Country.mmdb!")
+            return
+        
+        self.download_geoip_btn.setEnabled(False)
+        self.geoip_status_label.setText("⏳ Загрузка GeoIP базы...")
+        
+        self.geoip_download_worker = GeoIPDownloadWorker(url)
+        self.geoip_download_worker.log_signal.connect(self.log_write)
+        self.geoip_download_worker.done_signal.connect(self._handle_geoip_download)
+        self.geoip_download_worker.start()
+
+    def _handle_geoip_download(self, success):
+        self.download_geoip_btn.setEnabled(True)
+        if success:
+            self.geoip_db_loaded = True
+            self.geoip_status_label.setText("✅ GeoIP база загружена")
+        else:
+            self.geoip_db_loaded = False
+            self.geoip_status_label.setText("❌ Ошибка загрузки GeoIP базы")
+
     def fill_my_ip(self):
         self.status_label.setText("Запрос вашего IP...")
+
         class MyIPWorker(QThread):
             ip_signal = Signal(str)
 
@@ -154,17 +209,16 @@ class RealitySNIHunterApp(QWidget):
 
     def log_write(self, text):
         if "✅" in text:
-            html_text = f'<span style="color: green; font-weight: bold;">{text}</span>'
+            html_text = f'<span style="color: #4CAF50;">{text}</span>'
         elif "❌" in text:
-            html_text = f'<span style="color: red; font-weight: bold;">{text}</span>'
+            html_text = f'<span style="color: #f44336;">{text}</span>'
         elif "🔥" in text or "🏆" in text:
-            html_text = f'<span style="color: blue; font-weight: bold;">{text}</span>'
+            html_text = f'<span style="color: #FFC107; font-weight: bold;">{text}</span>'
         else:
             html_text = text
 
         if self.tab_widget.currentIndex() != 0:
             self.tab_widget.setCurrentIndex(0)
-
         self.result_output.append(html_text)
 
     def update_progress(self, val, total):
@@ -182,6 +236,7 @@ class RealitySNIHunterApp(QWidget):
         self.ext_range_cb.setEnabled(not is_running)
         self.geoip_url_edit.setEnabled(not is_running)
         self.geosite_url_edit.setEnabled(not is_running)
+        self.download_geoip_btn.setEnabled(not is_running)
         self.start_btn.setText("🚀 Сканирование...") if is_running else self.start_btn.setText("🚀 Старт сканирования")
 
     def start_scan(self):
@@ -189,6 +244,16 @@ class RealitySNIHunterApp(QWidget):
         if not ip:
             QMessageBox.warning(self, "Ошибка", "Укажи IP!")
             return
+        
+        if not self.geoip_db_loaded:
+            reply = QMessageBox.question(
+                self, 
+                "GeoIP база не загружена", 
+                "GeoIP база Country.mmdb не загружена. Фильтрация по странам будет недоступна.\n\nПродолжить сканирование?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
 
         self.set_running_state(True)
         self.rows = []
@@ -198,7 +263,6 @@ class RealitySNIHunterApp(QWidget):
         self.ip = ip
         self.port = int(self.port_edit.text() or 443)
         self.concurrency = max(50, min(int(self.concurrent_edit.text() or 300), 1000))
-
         self.current_ip_list = auto_ip_range(ip, self.ext_range_cb.isChecked())
 
         geoip_urls = [u.strip() for u in self.geoip_url_edit.toPlainText().split('\n') if u.strip()]
@@ -212,6 +276,7 @@ class RealitySNIHunterApp(QWidget):
             self.progress.setRange(0, 0)
             self.log_write(
                 f"Загружаем geoip ({len(geoip_urls)} ссылок) и geosite ({len(geosite_urls)} ссылок) параллельно...")
+
             self.geo_worker = GeoDataWorker(geoip_urls, geosite_urls)
             self.geo_worker.done_signal.connect(self._start_scan_with_geo)
             self.geo_worker.start()
@@ -220,15 +285,18 @@ class RealitySNIHunterApp(QWidget):
 
     def _start_scan_with_geo(self, ip_geo, dom_geo):
         self.progress.setRange(0, 1)
+
         if ip_geo:
             self.current_ip_list.extend(ip_geo)
             self.log_write(f"Добавлено {len(ip_geo)} IP из geoip!")
+
         if dom_geo:
             self.current_domain_list.extend(dom_geo)
             self.log_write(f"Добавлено {len(dom_geo)} доменов из geosite!")
 
         total = len(self.current_ip_list) + len(self.current_domain_list)
         self.log_write(f"Начало сканирования: {total} целей.\n")
+
         self.progress.setMaximum(total)
         self.progress.setValue(0)
 
@@ -250,31 +318,44 @@ class RealitySNIHunterApp(QWidget):
 
         if fresh_SNI:
             self.log_write("\n--- ВСЕ НАЙДЕННЫЕ SNI ---")
+            self.status_label.setText(f"Сканирование завершено. Найдено {len(fresh_SNI)} уникальных SNI. Проверка SNI...")
+            self.progress.setMaximum(len(fresh_SNI))
+            self.progress.setValue(0)
 
-        self.status_label.setText(f"Сканирование завершено. Найдено {len(fresh_SNI)} уникальных SNI. Проверка SNI...")
+            self.log_write("\n--- ПРОЦЕСС ВЫБОРА ЛУЧШЕГО SNI ---")
 
-
-        self.progress.setMaximum(len(fresh_SNI))
-        self.progress.setValue(0)
-        self.log_write("\n--- ПРОЦЕСС ВЫБОРА ЛУЧШЕГО SNI ---")
-
-        sni_concurrency = min(self.concurrency, 100)
-        self.sni_worker = SniCheckerWorker(self.ip, fresh_SNI, self.port, sni_concurrency)
-        self.sni_worker.log_signal.connect(self.log_write)
-        self.sni_worker.progress_signal.connect(self.update_progress)
-        self.sni_worker.result_signal.connect(self._finish_sni_check)
-        self.sni_worker.start()
+            sni_concurrency = min(self.concurrency, 100)
+            self.sni_worker = SniCheckerWorker(self.ip, fresh_SNI, self.port, sni_concurrency)
+            self.sni_worker.log_signal.connect(self.log_write)
+            self.sni_worker.progress_signal.connect(self.update_progress)
+            self.sni_worker.result_signal.connect(self._finish_sni_check)
+            self.sni_worker.start()
 
     def _finish_sni_check(self, ok_snis):
         self.set_running_state(False)
         self.status_label.setText("✅ Все задачи завершены!")
+
         self.final_sni_output.clear()
         self.final_sni_output.append("🔥 **Лучшие SNI, успешно работающие с целевым IP:**")
-        self.final_sni_output.append("<p style='color: blue; font-weight: bold;'>\n" + "\n".join(ok_snis) + "</p>")
+        self.final_sni_output.append("\n" + "\n".join(ok_snis) + "\n\n")
+
         self.final_sni_output.append("\n" + "-" * 40 + "\n")
-        self.final_sni_output.append("🏆 **20 самых оптимальных SNI (TLSv1.3, ALPN h2, Let's Encrypt/GlobalSign):**")
-        best_sni = pick_best_sni(self.rows, topn=20)
-        self.final_sni_output.append("<p style='color: green; font-weight: bold;'>\n" + "\n".join(best_sni) + "</p>")
+        
+        # Получаем фильтр по странам
+        country_filter_text = self.country_filter_edit.text().strip().upper()
+        country_filter = [c.strip() for c in country_filter_text.split(',')] if country_filter_text else None
+        
+        if country_filter:
+            self.final_sni_output.append(f"🏆 **20 самых оптимальных SNI (TLSv1.3, ALPN h2, Let's Encrypt/GlobalSign) для стран: {', '.join(country_filter)}:**")
+        else:
+            self.final_sni_output.append("🏆 **20 самых оптимальных SNI (TLSv1.3, ALPN h2, Let's Encrypt/GlobalSign):**")
+        
+        best_sni = pick_best_sni(self.rows, topn=20, filter_country=country_filter)
+        
+        if not best_sni and country_filter:
+            self.final_sni_output.append("\n⚠️ Не найдено SNI для указанных стран. Попробуйте без фильтра.\n")
+        else:
+            self.final_sni_output.append("\n" + "\n".join(best_sni) + "\n\n")
 
         self.log_write("\n--- АНАЛИЗ ЗАВЕРШЕН ---")
         self.tab_widget.setCurrentIndex(1)
@@ -283,7 +364,13 @@ class RealitySNIHunterApp(QWidget):
         if not self.rows:
             QMessageBox.warning(self, "Ошибка", "Нет результатов для экспорта")
             return
+
         path, _ = QFileDialog.getSaveFileName(self, "Сохр. как CSV", "result.csv", "CSV (*.csv)")
         if path:
             save_rows_to_csv(self.rows, path)
             QMessageBox.information(self, "Готово", f"Сохранено в {path}")
+    
+    def closeEvent(self, event):
+        """Закрываем базу GeoIP при выходе"""
+        close_geoip_db()
+        event.accept()

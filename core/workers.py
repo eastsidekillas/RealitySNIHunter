@@ -4,8 +4,36 @@ import socket
 import aiohttp
 from .networking import (
     tls_sni_discover_async, read_geoip_urls_async,
-    read_geosite_urls_async, auto_ip_range
+    read_geosite_urls_async, auto_ip_range, download_geoip_db_async,
+    load_geoip_db, close_geoip_db
 )
+
+
+class GeoIPDownloadWorker(QThread):
+    log_signal = Signal(str)
+    done_signal = Signal(bool)
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        asyncio.run(self.async_run())
+
+    async def async_run(self):
+        self.log_signal.emit(f"Загрузка GeoIP базы Country.mmdb...")
+        async with aiohttp.ClientSession() as session:
+            success = await download_geoip_db_async(session, self.url, "Country.mmdb")
+            if success:
+                if load_geoip_db("Country.mmdb"):
+                    self.log_signal.emit("✅ GeoIP база успешно загружена и активирована!")
+                    self.done_signal.emit(True)
+                else:
+                    self.log_signal.emit("❌ Ошибка загрузки GeoIP базы")
+                    self.done_signal.emit(False)
+            else:
+                self.log_signal.emit("❌ Не удалось скачать GeoIP базу")
+                self.done_signal.emit(False)
 
 
 class ScanWorker(QThread):
@@ -47,7 +75,6 @@ class ScanWorker(QThread):
                 pass
 
         all_tasks = []
-
         for ip in self.ip_list:
             all_tasks.append(tls_sni_discover_async(ip, self.port, 4, None))
 
@@ -62,17 +89,21 @@ class ScanWorker(QThread):
                 res = await task
                 update_progress()
                 if res.get("success"):
-                    log(f"{res['ip']} ✅ {res['domain'] or ''} | TLS {res['tls'] or '-'} | ALPN {res['alpn'] or '-'} | ISSUER: {res['issuer'] or '-'}")
+                    country_info = f"[IP: {res['ip_country'] or '?'}]"
+                    if res.get('domain_country'):
+                        country_info += f" [Domain: {res['domain_country']}]"
+                    
+                    log(f"{res['ip']} {country_info} ✅ {res['domain'] or ''} | TLS {res['tls'] or '-'} | ALPN {res['alpn'] or '-'} | ISSUER: {res['issuer'] or '-'}")
                     if res['domain']:
                         for dom in res['domain'].split(';'):
                             if dom not in discovered and dom != "" and "." in dom:
                                 discovered.add(dom)
                 else:
-                    log(f"{res['ip']} ❌ {res['error']}")
+                    country_info = f"[{res['ip_country'] or '?'}]"
+                    log(f"{res['ip']} {country_info} ❌ {res['error']}")
                 rows.append(res)
 
         await asyncio.gather(*(worker(task) for task in all_tasks))
-
         self.done_signal.emit(rows, list(discovered), [])
 
 
@@ -92,9 +123,7 @@ class GeoDataWorker(QThread):
         async with aiohttp.ClientSession() as session:
             geoip_task = read_geoip_urls_async(session, self.geoip_urls)
             geosite_task = read_geosite_urls_async(session, self.geosite_urls)
-
             ip_geo, dom_geo = await asyncio.gather(geoip_task, geosite_task)
-
             self.done_signal.emit(ip_geo, dom_geo)
 
 
@@ -134,7 +163,10 @@ class SniCheckerWorker(QThread):
                 res = await tls_sni_discover_async(self.ip, self.port, 4, sni)
                 update_progress()
                 if res.get('success'):
-                    log(f"[{sni}] ==> ✅ TLS {res['tls']} | ISSUER: {res['issuer']}")
+                    country_info = f"[IP: {res['ip_country'] or '?'}]"
+                    if res.get('domain_country'):
+                        country_info += f" [Domain: {res['domain_country']}]"
+                    log(f"[{sni}] {country_info} ==> ✅ TLS {res['tls']} | ISSUER: {res['issuer']}")
                     ok_snis.append(sni)
                 else:
                     log(f"[{sni}] ==> ❌ {res['error']}")
