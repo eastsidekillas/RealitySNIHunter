@@ -5,8 +5,50 @@ import ipaddress
 import csv
 import asyncio
 import aiohttp
+import maxminddb
+import os
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+
+# Глобальный reader для GeoIP
+_geoip_reader = None
+
+
+def load_geoip_db(db_path="Country.mmdb"):
+    """Загружает базу GeoIP Country.mmdb"""
+    global _geoip_reader
+    try:
+        if os.path.exists(db_path):
+            _geoip_reader = maxminddb.open_database(db_path)
+            return True
+    except Exception as e:
+        print(f"Ошибка загрузки GeoIP базы: {e}")
+    return False
+
+
+def get_country_by_ip(ip):
+    """Получает код страны по IP-адресу"""
+    global _geoip_reader
+    if _geoip_reader is None:
+        return None
+    try:
+        result = _geoip_reader.get(ip)
+        if result and 'country' in result:
+            return result['country'].get('iso_code', None)
+    except Exception:
+        pass
+    return None
+
+
+def close_geoip_db():
+    global _geoip_reader
+    if _geoip_reader is not None:
+        try:
+            _geoip_reader.close()
+            pass
+        except Exception:
+            pass
+        _geoip_reader = None
 
 
 def auto_ip_range(ip, extended=False):
@@ -26,21 +68,50 @@ async def get_my_ip_async(session):
         return ""
 
 
+async def download_geoip_db_async(session, url, save_path="Country.mmdb"):
+    """Скачивает базу GeoIP Country.mmdb асинхронно"""
+    try:
+        async with session.get(url, timeout=60) as resp:
+            if resp.status == 200:
+                with open(save_path, 'wb') as f:
+                    async for chunk in resp.content.iter_chunked(8192):
+                        f.write(chunk)
+                return True
+    except Exception as e:
+        print(f"Ошибка загрузки GeoIP базы: {e}")
+    return False
+
+
 def save_rows_to_csv(rows, path):
     with open(path, "w", newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f,
-                                fieldnames=["ip", "tls", "alpn", "domain", "issuer", "fingerprint", "success", "error"])
+                                fieldnames=["ip", "ip_country", "tls", "alpn", "domain", "domain_country",
+                                            "issuer", "fingerprint", "success", "error"])
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
 
 
-def pick_best_sni(rows, topn=20):
+def pick_best_sni(rows, topn=20, filter_country=None):
+    """
+    Фильтрует лучшие SNI с учетом страны
+    filter_country: список кодов стран для фильтрации (например, ['RU', 'US'])
+    """
     filtered = []
     for r in rows:
         if r.get('success') and r.get('tls') and 'TLSv1.3' in r['tls'] \
                 and r.get('alpn') == 'h2' \
                 and r.get('issuer') and ('Encrypt' in r['issuer'] or 'GlobalSign' in r['issuer']):
+
+            # Фильтрация по стране IP или домена
+            if filter_country:
+                ip_country = r.get('ip_country')
+                domain_country = r.get('domain_country')
+
+                # Если указаны страны для фильтрации, проверяем совпадение
+                if not (ip_country in filter_country or domain_country in filter_country):
+                    continue
+
             for dom in r['domain'].split(';'):
                 if dom not in filtered and '.' in dom:
                     filtered.append(dom)
@@ -88,11 +159,20 @@ async def read_geosite_urls_async(session, urls):
     return domains
 
 
+async def resolve_domain_to_ip(domain):
+    """Резолвит домен в IP асинхронно"""
+    try:
+        return await asyncio.to_thread(socket.gethostbyname, domain)
+    except:
+        return None
+
+
 async def tls_sni_discover_async(ip, port=443, timeout=4, domain_mode=None):
     context = ssl.create_default_context()
     context.set_ciphers('ECDHE+AESGCM')
     context.check_hostname = False
     context.set_alpn_protocols(['h2', 'http/1.1'])
+
     try:
         fut = asyncio.open_connection(ip, port, ssl=context, server_hostname=domain_mode, happy_eyeballs_delay=0.1)
         try:
@@ -124,11 +204,25 @@ async def tls_sni_discover_async(ip, port=443, timeout=4, domain_mode=None):
         await writer.wait_closed()
 
         names = [n for n in set(names) if '.' in n and not n.endswith('.local')]
+
+        # Получаем страну IP
+        ip_country = get_country_by_ip(ip)
+
+        # Получаем страну первого домена (если есть)
+        domain_country = None
+        if names:
+            first_domain = names[0]
+            domain_ip = await resolve_domain_to_ip(first_domain)
+            if domain_ip:
+                domain_country = get_country_by_ip(domain_ip)
+
         return {
             "ip": ip,
+            "ip_country": ip_country,
             "tls": tlv,
             "alpn": alpn,
             "domain": ";".join(names),
+            "domain_country": domain_country,
             "issuer": issuer[:30],
             "fingerprint": fp,
             "success": True
@@ -136,10 +230,12 @@ async def tls_sni_discover_async(ip, port=443, timeout=4, domain_mode=None):
     except Exception as e:
         return {
             "ip": ip,
+            "ip_country": get_country_by_ip(ip),
             "success": False,
             "tls": None,
             "alpn": None,
             "domain": None,
+            "domain_country": None,
             "issuer": None,
             "fingerprint": None,
             "error": str(e)[:60]
