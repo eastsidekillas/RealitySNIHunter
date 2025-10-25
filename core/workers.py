@@ -1,19 +1,22 @@
-from PySide6.QtCore import QThread, Signal
+"""Worker threads for RealitySNIHunter."""
+
 import asyncio
-import socket
 import aiohttp
+from PySide6.QtCore import QThread, Signal
 from .networking import (
-    tls_sni_discover_async, read_geoip_urls_async,
-    read_geosite_urls_async, auto_ip_range, download_geoip_db_async,
-    load_geoip_db, close_geoip_db
+    tls_sni_discover_async, check_sni_with_target_async,
+    read_geoip_urls_async, read_geosite_urls_async,
+    download_geoip_db_async, load_geoip_db, get_country_code
 )
 
 
 class GeoIPDownloadWorker(QThread):
+    """Worker для загрузки GeoIP базы Country.mmdb."""
+
     log_signal = Signal(str)
     done_signal = Signal(bool)
 
-    def __init__(self, url):
+    def __init__(self, url: str):
         super().__init__()
         self.url = url
 
@@ -21,97 +24,35 @@ class GeoIPDownloadWorker(QThread):
         asyncio.run(self.async_run())
 
     async def async_run(self):
-        self.log_signal.emit(f"Загрузка GeoIP базы Country.mmdb...")
-        async with aiohttp.ClientSession() as session:
-            success = await download_geoip_db_async(session, self.url, "Country.mmdb")
+        try:
+            self.log_signal.emit("⏳ Загрузка GeoIP базы Country.mmdb...")
+
+            success = await download_geoip_db_async(self.url, "data/Country.mmdb")
+
             if success:
-                if load_geoip_db("Country.mmdb"):
-                    self.log_signal.emit("✅ GeoIP база успешно загружена и активирована!")
+                self.log_signal.emit("✅ GeoIP база успешно загружена!")
+
+                if load_geoip_db("data/Country.mmdb"):
+                    self.log_signal.emit("✅ GeoIP база успешно открыта и готова к использованию!")
                     self.done_signal.emit(True)
                 else:
-                    self.log_signal.emit("❌ Ошибка загрузки GeoIP базы")
+                    self.log_signal.emit("❌ Не удалось открыть загруженную базу")
                     self.done_signal.emit(False)
             else:
-                self.log_signal.emit("❌ Не удалось скачать GeoIP базу")
+                self.log_signal.emit("❌ Ошибка загрузки GeoIP базы")
                 self.done_signal.emit(False)
 
-
-class ScanWorker(QThread):
-    log_signal = Signal(str)
-    progress_signal = Signal(int, int)
-    done_signal = Signal(list, list, list)
-
-    def __init__(self, ip_list, domain_list, port, threads):
-        super().__init__()
-        self.ip_list = ip_list
-        self.domain_list = domain_list
-        self.port = port
-        self.threads = threads
-
-    def run(self):
-        asyncio.run(self.async_run())
-
-    async def async_run(self):
-        rows = []
-        discovered = set()
-        total = len(self.ip_list) + len(self.domain_list)
-        counter = 0
-
-        def log(msg):
-            self.log_signal.emit(msg)
-
-        def update_progress():
-            nonlocal counter
-            counter += 1
-            self.progress_signal.emit(counter, total)
-
-        # 1. Сначала резолвим домены асинхронно
-        ip_and_domains = []
-        for domain in self.domain_list:
-            try:
-                ip_d = await asyncio.to_thread(socket.gethostbyname, domain)
-                ip_and_domains.append((ip_d, domain))
-            except:
-                pass
-
-        all_tasks = []
-        for ip in self.ip_list:
-            all_tasks.append(tls_sni_discover_async(ip, self.port, 4, None))
-
-        for ip, domain in ip_and_domains:
-            all_tasks.append(tls_sni_discover_async(ip, self.port, 4, domain))
-
-        sem = asyncio.Semaphore(self.threads)
-
-        async def worker(task):
-            nonlocal rows, discovered
-            async with sem:
-                res = await task
-                update_progress()
-                if res.get("success"):
-                    country_info = f"[IP: {res['ip_country'] or '?'}]"
-                    if res.get('domain_country'):
-                        country_info += f" [Domain: {res['domain_country']}]"
-
-                    log(f"{res['ip']} {country_info} ✅ {res['domain'] or ''} | TLS {res['tls'] or '-'} | ALPN {res['alpn'] or '-'} | ISSUER: {res['issuer'] or '-'}")
-                    if res['domain']:
-                        for dom in res['domain'].split(';'):
-                            if dom not in discovered and dom != "" and "." in dom:
-                                discovered.add(dom)
-                else:
-                    country_info = f"[{res['ip_country'] or '?'}]"
-                    log(f"{res['ip']} {country_info} ❌ {res['error']}")
-                rows.append(res)
-
-        await asyncio.gather(*(worker(task) for task in all_tasks))
-        self.done_signal.emit(rows, list(discovered), [])
+        except Exception as e:
+            self.log_signal.emit(f"❌ Ошибка: {e}")
+            self.done_signal.emit(False)
 
 
 class GeoDataWorker(QThread):
-    log_signal = Signal(str)
+    """Worker для загрузки Geo данных (IP и домены)."""
+
     done_signal = Signal(list, list)
 
-    def __init__(self, geoip_urls, geosite_urls):
+    def __init__(self, geoip_urls: list, geosite_urls: list):
         super().__init__()
         self.geoip_urls = geoip_urls
         self.geosite_urls = geosite_urls
@@ -121,55 +62,177 @@ class GeoDataWorker(QThread):
 
     async def async_run(self):
         async with aiohttp.ClientSession() as session:
-            geoip_task = read_geoip_urls_async(session, self.geoip_urls)
-            geosite_task = read_geosite_urls_async(session, self.geosite_urls)
-            ip_geo, dom_geo = await asyncio.gather(geoip_task, geosite_task)
-            self.done_signal.emit(ip_geo, dom_geo)
+            ip_list = []
+            domain_list = []
+
+            if self.geoip_urls:
+                ip_list = await read_geoip_urls_async(session, self.geoip_urls)
+
+            if self.geosite_urls:
+                domain_list = await read_geosite_urls_async(session, self.geosite_urls)
+
+            self.done_signal.emit(ip_list, domain_list)
 
 
-class SniCheckerWorker(QThread):
+class ScanWorker(QThread):
+    """Worker для сканирования IP адресов и доменов."""
+
     log_signal = Signal(str)
     progress_signal = Signal(int, int)
-    result_signal = Signal(list)
+    done_signal = Signal(list, list, int)
 
-    def __init__(self, ip, snis, port, concurrency):
+    def __init__(self, ip_list: list, domain_list: list, port: int, concurrency: int):
         super().__init__()
-        self.ip = ip
-        self.snis = snis
+        self.ip_list = ip_list
+        self.domain_list = domain_list
         self.port = port
         self.concurrency = concurrency
+        self.rows = []
+        self.discovered_snis = set()
 
     def run(self):
         asyncio.run(self.async_run())
 
     async def async_run(self):
-        ok_snis = []
-        total = len(self.snis)
-        counter = 0
+        """Асинхронное сканирование."""
+        targets = []
 
-        def log(msg):
-            self.log_signal.emit(msg)
+        # IP адреса
+        for ip in self.ip_list:
+            targets.append(('ip', ip))
 
-        def update_progress():
-            nonlocal counter
-            counter += 1
-            self.progress_signal.emit(counter, total)
+        # Домены
+        for domain in self.domain_list:
+            targets.append(('domain', domain))
 
-        sem = asyncio.Semaphore(self.concurrency)
+        total = len(targets)
 
-        async def check_sni(sni):
-            nonlocal ok_snis
-            async with sem:
-                res = await tls_sni_discover_async(self.ip, self.port, 4, sni)
-                update_progress()
-                if res.get('success'):
-                    country_info = f"[IP: {res['ip_country'] or '?'}]"
-                    if res.get('domain_country'):
-                        country_info += f" [Domain: {res['domain_country']}]"
-                    log(f"[{sni}] {country_info} ==> ✅ TLS {res['tls']} | ISSUER: {res['issuer']}")
-                    ok_snis.append(sni)
-                else:
-                    log(f"[{sni}] ==> ❌ {res['error']}")
+        if total == 0:
+            self.log_signal.emit("⚠️ Нет целей для сканирования")
+            self.done_signal.emit([], [], 0)
+            return
 
-        await asyncio.gather(*(check_sni(sni) for sni in self.snis))
-        self.result_signal.emit(ok_snis)
+        self.log_signal.emit(f"🔍 Начало сканирования {total} целей...")
+        self.progress_signal.emit(0, total)
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+        completed = 0
+
+        async def scan_target(target_type: str, target: str):
+            nonlocal completed
+            async with semaphore:
+                try:
+                    # Сканируем цель
+                    success, sni, details = await tls_sni_discover_async(target, self.port, timeout=5.0)
+
+                    completed += 1
+                    self.progress_signal.emit(completed, total)
+
+                    if success and sni:
+                        self.discovered_snis.add(sni)
+
+                        # Получаем код страны
+                        country = get_country_code(target) if target_type == 'ip' else 'N/A'
+
+                        # Извлекаем детали
+                        protocol = details.get('protocol', 'Unknown')
+                        cipher = details.get('cipher', 'Unknown')
+                        cert = details.get('cert', {})
+
+                        # Issuer
+                        issuer = 'Unknown'
+                        if cert and 'issuer' in cert:
+                            issuer_tuple = cert['issuer']
+                            for item in issuer_tuple:
+                                for key, value in item:
+                                    if key == 'organizationName':
+                                        issuer = value
+                                        break
+
+                        row = {
+                            'ip': target if target_type == 'ip' else 'N/A',
+                            'sni': sni,
+                            'tls_version': protocol,
+                            'cipher': cipher,
+                            'alpn': 'N/A',  # ALPN требует специального извлечения
+                            'issuer': issuer,
+                            'country': country
+                        }
+
+                        self.rows.append(row)
+                        self.log_signal.emit(f"✅ [{completed}/{total}] {target} → {sni}")
+                    else:
+                        self.log_signal.emit(f"❌ [{completed}/{total}] {target}: Нет TLS или SNI")
+
+                except Exception as e:
+                    completed += 1
+                    self.progress_signal.emit(completed, total)
+                    self.log_signal.emit(f"❌ [{completed}/{total}] {target}: {str(e)[:50]}")
+
+        # Запускаем сканирование
+        tasks = [scan_target(t_type, t_value) for t_type, t_value in targets]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.log_signal.emit(f"\n✅ Сканирование завершено: найдено {len(self.discovered_snis)} уникальных SNI")
+        self.done_signal.emit(self.rows, list(self.discovered_snis), total)
+
+
+class SniCheckerWorker(QThread):
+    """Worker для проверки SNI с целевым IP."""
+
+    log_signal = Signal(str)
+    progress_signal = Signal(int, int)
+    result_signal = Signal(list)
+
+    def __init__(self, target_ip: str, sni_list: list, port: int, concurrency: int):
+        super().__init__()
+        self.target_ip = target_ip
+        self.sni_list = sni_list
+        self.port = port
+        self.concurrency = concurrency
+        self.working_snis = []
+
+    def run(self):
+        asyncio.run(self.async_run())
+
+    async def async_run(self):
+        """Асинхронная проверка SNI."""
+        total = len(self.sni_list)
+
+        if total == 0:
+            self.log_signal.emit("⚠️ Нет SNI для проверки")
+            self.result_signal.emit([])
+            return
+
+        self.log_signal.emit(f"🔍 Начало проверки {total} SNI с IP {self.target_ip}...")
+        self.progress_signal.emit(0, total)
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+        completed = 0
+
+        async def check_sni(sni: str):
+            nonlocal completed
+            async with semaphore:
+                try:
+                    success = await check_sni_with_target_async(self.target_ip, sni, self.port, timeout=5.0)
+
+                    completed += 1
+                    self.progress_signal.emit(completed, total)
+
+                    if success:
+                        self.working_snis.append(sni)
+                        self.log_signal.emit(f"✅ [{completed}/{total}] {sni}: Работает")
+                    else:
+                        self.log_signal.emit(f"❌ [{completed}/{total}] {sni}: Не работает")
+
+                except Exception as e:
+                    completed += 1
+                    self.progress_signal.emit(completed, total)
+                    self.log_signal.emit(f"❌ [{completed}/{total}] {sni}: {str(e)[:50]}")
+
+        # Запускаем проверку
+        tasks = [check_sni(sni) for sni in self.sni_list]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.log_signal.emit(f"\n✅ Проверка завершена: {len(self.working_snis)}/{total} SNI работают")
+        self.result_signal.emit(self.working_snis)

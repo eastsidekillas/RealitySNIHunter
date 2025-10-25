@@ -13,9 +13,12 @@ from typing import Dict, List, Optional, Tuple
 import aiohttp
 from PySide6.QtCore import QObject, Signal
 
+# Импортируем новую функцию проверки
+from .networking import check_xray_functionality_async, batch_check_xray_functionality
+
 
 class XrayVerifier(QObject):
-    """Verifies SNI using Xray Core."""
+    """Verifies SNI using Xray Core with preliminary TLS check."""
 
     progress_signal = Signal(str)
     result_signal = Signal(dict)
@@ -31,6 +34,7 @@ class XrayVerifier(QObject):
         super().__init__()
         self.xray_path = None
         self.temp_dir = tempfile.mkdtemp(prefix="xray_")
+        self.server_ip = None  # Будет установлен при парсинге конфига
 
     async def ensure_xray_installed(self) -> bool:
         """Download and install Xray Core if not present."""
@@ -136,7 +140,7 @@ class XrayVerifier(QObject):
             if '#' in params_dict.get('type', ''):
                 params_dict['type'], name = params_dict['type'].split('#', 1)
 
-            return {
+            config = {
                 'uuid': user_info,
                 'address': address,
                 'port': int(port.split('#')[0]),
@@ -150,9 +154,84 @@ class XrayVerifier(QObject):
                 'encryption': params_dict.get('encryption', 'none')
             }
 
+            # Сохраняем IP сервера для предварительной проверки
+            self.server_ip = address
+
+            return config
+
         except Exception as e:
             self.progress_signal.emit(f"⚠️ Ошибка парсинга VLESS: {e}")
             return None
+
+    async def preliminary_tls_check(
+            self,
+            sni_list: List[str],
+            max_workers: int = 10
+    ) -> Tuple[List[str], Dict[str, Dict]]:
+        """
+        Предварительная проверка SNI через TLS-рукопожатие.
+
+        Returns:
+            Tuple: (список прошедших проверку SNI, словарь всех результатов)
+        """
+        if not self.server_ip:
+            self.progress_signal.emit("⚠️ IP сервера не определен")
+            return sni_list, {}
+
+        self.progress_signal.emit(f"\n{'=' * 60}")
+        self.progress_signal.emit("🔍 ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА TLS")
+        self.progress_signal.emit(f"{'=' * 60}")
+        self.progress_signal.emit(f"📊 Проверка {len(sni_list)} SNI на TLS-доступность...")
+        self.progress_signal.emit(f"🎯 IP сервера: {self.server_ip}")
+        self.progress_signal.emit(f"⚙️ Параллельных проверок: {max_workers}\n")
+
+        # Выполняем пакетную проверку
+        results = await batch_check_xray_functionality(
+            ip=self.server_ip,
+            sni_list=sni_list,
+            port=443,
+            max_workers=max_workers,
+            timeout=5.0
+        )
+
+        # Анализируем результаты
+        passed_snis = []
+        blocked_count = 0
+        failed_count = 0
+        results_dict = {}
+
+        for result in results:
+            sni = result.get('sni')
+            status = result.get('status')
+            results_dict[sni] = result
+
+            if status == "OK":
+                passed_snis.append(sni)
+                self.progress_signal.emit(
+                    f"✅ {sni}: {result.get('latency', 0):.0f}ms ({result.get('protocol', 'N/A')})"
+                )
+            elif status == "BLOCKED":
+                blocked_count += 1
+                self.progress_signal.emit(
+                    f"🚫 {sni}: ЗАБЛОКИРОВАН (сброс соединения)"
+                )
+            else:
+                failed_count += 1
+                if failed_count % 10 == 0:  # Логируем каждую 10-ю ошибку
+                    self.progress_signal.emit(
+                        f"❌ [{failed_count} ошибок] {sni}: {status}"
+                    )
+
+        # Статистика
+        self.progress_signal.emit(f"\n{'=' * 60}")
+        self.progress_signal.emit("📊 РЕЗУЛЬТАТЫ ПРЕДВАРИТЕЛЬНОЙ ПРОВЕРКИ")
+        self.progress_signal.emit(f"{'=' * 60}")
+        self.progress_signal.emit(f"✅ Прошло проверку: {len(passed_snis)}")
+        self.progress_signal.emit(f"🚫 Заблокировано: {blocked_count}")
+        self.progress_signal.emit(f"❌ Ошибки подключения: {failed_count}")
+        self.progress_signal.emit(f"📈 Процент успеха: {(len(passed_snis) / len(sni_list) * 100):.1f}%\n")
+
+        return passed_snis, results_dict
 
     def _create_xray_config(self, server_config: Dict, test_sni: str) -> Dict:
         """Create Xray Core configuration for testing."""
@@ -227,10 +306,10 @@ class XrayVerifier(QObject):
                 proxy = "socks5://127.0.0.1:10808"
                 try:
                     async with session.get(
-                        "http://www.gstatic.com/generate_204",
-                        proxy=proxy,
-                        timeout=aiohttp.ClientTimeout(total=timeout),
-                        allow_redirects=False
+                            "http://www.gstatic.com/generate_204",
+                            proxy=proxy,
+                            timeout=aiohttp.ClientTimeout(total=timeout),
+                            allow_redirects=False
                     ) as response:
                         latency = (time.time() - start_time) * 1000  # Convert to ms
 
@@ -259,12 +338,24 @@ class XrayVerifier(QObject):
                         pass
 
     async def verify_sni_list(
-        self,
-        vless_config: str,
-        sni_list: List[str],
-        max_workers: int = 3
+            self,
+            vless_config: str,
+            sni_list: List[str],
+            max_workers: int = 3,
+            enable_preliminary_check: bool = True
     ) -> List[Dict]:
-        """Verify list of SNIs using Xray Core."""
+        """
+        Verify list of SNIs using Xray Core with optional preliminary TLS check.
+
+        Args:
+            vless_config: VLESS configuration string.
+            sni_list: List of SNIs to verify.
+            max_workers: Maximum number of parallel verifications.
+            enable_preliminary_check: Enable preliminary TLS handshake check.
+
+        Returns:
+            List of verified SNI results.
+        """
 
         # Ensure Xray Core is installed
         if not await self.ensure_xray_installed():
@@ -276,8 +367,27 @@ class XrayVerifier(QObject):
             self.progress_signal.emit("❌ Не удалось распарсить VLESS конфигурацию")
             return []
 
+        # Предварительная TLS проверка (если включена)
+        tls_results = {}
+        if enable_preliminary_check:
+            passed_snis, tls_results = await self.preliminary_tls_check(
+                sni_list,
+                max_workers=max_workers * 3  # Больше потоков для быстрой TLS проверки
+            )
+
+            if not passed_snis:
+                self.progress_signal.emit("❌ Ни один SNI не прошел предварительную TLS проверку")
+                return []
+
+            # Используем только прошедшие предварительную проверку
+            sni_list = passed_snis
+            self.progress_signal.emit(f"✅ Для полной проверки отобрано {len(sni_list)} SNI\n")
+
         total_snis = len(sni_list)
-        self.progress_signal.emit(f"🔍 Начало проверки ВСЕХ {total_snis} SNI через Xray Core...")
+        self.progress_signal.emit(f"\n{'=' * 60}")
+        self.progress_signal.emit("🚀 ПОЛНАЯ ПРОВЕРКА ЧЕРЕЗ XRAY CORE")
+        self.progress_signal.emit(f"{'=' * 60}")
+        self.progress_signal.emit(f"🔍 Проверка {total_snis} SNI через Xray Core...")
         self.progress_signal.emit(f"⚙️ Параллельных проверок: {max_workers}")
         self.progress_signal.emit(f"⏱️ Примерное время: ~{(total_snis * 12) // max_workers // 60} мин\n")
 
@@ -316,17 +426,19 @@ class XrayVerifier(QObject):
                         'sni': sni,
                         'success': success,
                         'latency': latency,
-                        'status': status
+                        'status': status,
+                        'tls_check': tls_results.get(sni, {})  # Добавляем результаты TLS проверки
                     }
 
                     if success:
                         successful_count += 1
+                        tls_latency = tls_results.get(sni, {}).get('latency', 0)
                         self.progress_signal.emit(
-                            f"✅ [{successful_count} успешных] {sni}: {latency:.0f}ms"
+                            f"✅ [{successful_count} успешных] {sni}: {latency:.0f}ms (TLS: {tls_latency:.0f}ms)"
                         )
                     else:
                         failed_count += 1
-                        if failed_count % 10 == 0:  # Логируем каждую 10-ю неудачу
+                        if failed_count % 10 == 0:
                             self.progress_signal.emit(
                                 f"❌ [{failed_count} неудач] Последний: {sni}: {status}"
                             )
@@ -340,7 +452,8 @@ class XrayVerifier(QObject):
                         'sni': sni,
                         'success': False,
                         'latency': 0,
-                        'status': f"Error: {str(e)[:50]}"
+                        'status': f"Error: {str(e)[:50]}",
+                        'tls_check': tls_results.get(sni, {})
                     }
 
         # Test all SNIs
@@ -351,13 +464,13 @@ class XrayVerifier(QObject):
         valid_results = [r for r in results if r and r['success']]
         valid_results.sort(key=lambda x: x['latency'])
 
-        self.progress_signal.emit(f"\n{'='*60}")
-        self.progress_signal.emit(f"✅ ПРОВЕРКА ЗАВЕРШЕНА")
-        self.progress_signal.emit(f"{'='*60}")
-        self.progress_signal.emit(f"📊 Проверено: {total_snis} SNI")
+        self.progress_signal.emit(f"\n{'=' * 60}")
+        self.progress_signal.emit(f"✅ ПОЛНАЯ ПРОВЕРКА ЗАВЕРШЕНА")
+        self.progress_signal.emit(f"{'=' * 60}")
+        self.progress_signal.emit(f"📊 Проверено через Xray: {total_snis} SNI")
         self.progress_signal.emit(f"✅ Успешных: {len(valid_results)}")
         self.progress_signal.emit(f"❌ Неудачных: {total_snis - len(valid_results)}")
-        self.progress_signal.emit(f"📈 Процент успеха: {(len(valid_results)/total_snis*100):.1f}%\n")
+        self.progress_signal.emit(f"📈 Процент успеха: {(len(valid_results) / total_snis * 100):.1f}%\n")
 
         return valid_results
 
