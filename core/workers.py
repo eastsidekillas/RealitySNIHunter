@@ -7,6 +7,7 @@ from .networking import (
     read_geosite_urls_async, auto_ip_range, download_geoip_db_async,
     load_geoip_db, close_geoip_db
 )
+from .xray_checker import test_snis_batch
 
 
 class GeoIPDownloadWorker(QThread):
@@ -34,6 +35,46 @@ class GeoIPDownloadWorker(QThread):
             else:
                 self.log_signal.emit("❌ Не удалось скачать GeoIP базу")
                 self.done_signal.emit(False)
+
+
+class XrayCheckerWorker(QThread):
+    log_signal = Signal(str)
+    progress_signal = Signal(int, int)
+    result_signal = Signal(list)
+
+    def __init__(self, server_ip, server_port, snis, xray_path="xray.exe"):
+        super().__init__()
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.snis = snis
+        self.xray_path = xray_path
+
+    def run(self):
+        asyncio.run(self.async_run())
+
+    async def async_run(self):
+        total = len(self.snis)
+        self.log_signal.emit(f"\n🔍 Начало проверки {total} SNI через Xray-core Reality...\n")
+        
+        results = await test_snis_batch(
+            self.server_ip,
+            self.server_port,
+            self.snis,
+            self.xray_path,
+            max_concurrent=1  # По одному, чтобы не конфликтовать
+        )
+        
+        successful_snis = []
+        for i, result in enumerate(results, 1):
+            self.progress_signal.emit(i, total)
+            
+            if result["success"]:
+                self.log_signal.emit(f"[{result['sni']}] ✅ Xray Reality: Успешное подключение!")
+                successful_snis.append(result['sni'])
+            else:
+                self.log_signal.emit(f"[{result['sni']}] ❌ Xray Reality: {result['error']}")
+        
+        self.result_signal.emit(successful_snis)
 
 
 class ScanWorker(QThread):

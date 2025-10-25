@@ -4,8 +4,17 @@ a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=[('style.qss', '.'), ('Country.mmdb', '.')],
-    hiddenimports=['ui', 'ui.main_window', 'core', 'core.workers', 'core.networking', 'maxminddb'],
+    datas=[
+        ('style.qss', '.'),
+        ('Country.mmdb', '.'),
+        # Раскомментируйте если хотите включить xray.exe в сборку
+        # ('xray.exe', '.')
+    ],
+    hiddenimports=[
+        'ui', 'ui.main_window', 
+        'core', 'core.workers', 'core.networking', 'core.xray_checker',
+        'maxminddb', 'aiohttp', 'aiohttp_socks'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

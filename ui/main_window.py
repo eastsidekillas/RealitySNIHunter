@@ -5,20 +5,21 @@ import asyncio
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout,
     QLineEdit, QHBoxLayout, QMessageBox, QTextEdit, QFileDialog,
-    QCheckBox, QProgressBar, QGroupBox, QTabWidget, QGridLayout, QFrame, QComboBox
+    QCheckBox, QProgressBar, QGroupBox, QTabWidget, QGridLayout, QFrame
 )
 from PySide6.QtCore import QThread, Signal, Qt
-from core.workers import ScanWorker, SniCheckerWorker, GeoDataWorker, GeoIPDownloadWorker
+from core.workers import ScanWorker, SniCheckerWorker, GeoDataWorker, GeoIPDownloadWorker, XrayCheckerWorker
 from core.networking import (
     get_my_ip_async, auto_ip_range, save_rows_to_csv, 
     pick_best_sni, load_geoip_db, close_geoip_db
 )
+from core.xray_checker import XrayChecker
 
 
 class RealitySNIHunterApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RealitySNIHunter v0.2")
+        self.setWindowTitle("RealitySNIHunter v0.3")
         self.rows = []
         self.valid_snis = []
         self.current_ip_list = []
@@ -28,12 +29,27 @@ class RealitySNIHunterApp(QWidget):
         self.geoip_db_loaded = False
         self._create_widgets()
         self._setup_ui()
-        self.resize(1200, 800)
+        self.resize(1200, 900)
         
         # Попытка загрузить существующую базу при запуске
         if load_geoip_db("Country.mmdb"):
             self.geoip_db_loaded = True
             self.geoip_status_label.setText("✅ GeoIP база загружена")
+        
+        # Проверка доступности Xray
+        self._check_xray()
+
+    def _check_xray(self):
+        """Проверяет наличие Xray-core"""
+        xray_path = self.xray_path_edit.text().strip() or "xray.exe"
+        checker = XrayChecker(xray_path)
+        
+        if checker.xray_available:
+            self.xray_status_label.setText("✅ Xray-core обнаружен")
+            self.xray_check_enabled = True
+        else:
+            self.xray_status_label.setText("❌ Xray-core не найден")
+            self.xray_check_enabled = False
 
     # --- UI Setup Methods ---
     def _create_widgets(self):
@@ -66,6 +82,18 @@ class RealitySNIHunterApp(QWidget):
         self.country_filter_edit = QLineEdit()
         self.country_filter_edit.setPlaceholderText("Коды стран через запятую (RU,US,DE) или оставьте пустым")
 
+        # Xray настройки
+        self.xray_path_edit = QLineEdit("xray.exe")
+        self.xray_path_edit.setPlaceholderText("Путь к xray.exe (или просто xray.exe если в PATH)")
+        
+        self.xray_check_btn = QPushButton("🔍 Проверить Xray")
+        self.xray_check_btn.clicked.connect(self._check_xray)
+        
+        self.xray_status_label = QLabel("❓ Xray-core не проверен")
+        
+        self.xray_enable_cb = QCheckBox("Включить проверку через Xray Reality (после топ-20)")
+        self.xray_enable_cb.setChecked(False)
+
         self.geoip_url_edit = QTextEdit()
         self.geoip_url_edit.setPlaceholderText("Ссылки на geoip.dat (каждая с новой строки)")
 
@@ -91,10 +119,14 @@ class RealitySNIHunterApp(QWidget):
 
         self.final_sni_output = QTextEdit()
         self.final_sni_output.setReadOnly(True)
+        
+        self.xray_results_output = QTextEdit()
+        self.xray_results_output.setReadOnly(True)
 
         self.tab_widget = QTabWidget()
         self.tab_widget.addTab(self.result_output, "Лог сканирования и Детали")
         self.tab_widget.addTab(self.final_sni_output, "Лучшие SNI (Авто-фильтр)")
+        self.tab_widget.addTab(self.xray_results_output, "Xray Reality Проверка")
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -132,6 +164,27 @@ class RealitySNIHunterApp(QWidget):
         
         geoip_mmdb_group.setLayout(geoip_mmdb_layout)
         main_layout.addWidget(geoip_mmdb_group)
+
+        # Xray секция
+        xray_group = QGroupBox("⚡ Xray-core Reality Проверка (дополнительно)")
+        xray_layout = QVBoxLayout()
+        
+        xray_path_layout = QHBoxLayout()
+        xray_path_layout.addWidget(QLabel("Путь к Xray:"))
+        xray_path_layout.addWidget(self.xray_path_edit)
+        xray_path_layout.addWidget(self.xray_check_btn)
+        
+        xray_layout.addLayout(xray_path_layout)
+        xray_layout.addWidget(self.xray_status_label)
+        xray_layout.addWidget(self.xray_enable_cb)
+        
+        info_label = QLabel("ℹ️ Xray проверка запустит реальное подключение через Reality протокол для валидации SNI")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #AAAAAA; font-size: 9pt;")
+        xray_layout.addWidget(info_label)
+        
+        xray_group.setLayout(xray_layout)
+        main_layout.addWidget(xray_group)
 
         geo_group = QGroupBox("Дополнительные Источники")
         geo_layout = QHBoxLayout()
@@ -212,13 +265,13 @@ class RealitySNIHunterApp(QWidget):
             html_text = f'<span style="color: #4CAF50;">{text}</span>'
         elif "❌" in text:
             html_text = f'<span style="color: #f44336;">{text}</span>'
-        elif "🔥" in text or "🏆" in text:
+        elif "🔥" in text or "🏆" in text or "⚡" in text:
             html_text = f'<span style="color: #FFC107; font-weight: bold;">{text}</span>'
+        elif "🔍" in text:
+            html_text = f'<span style="color: #00BCD4; font-weight: bold;">{text}</span>'
         else:
             html_text = text
 
-        if self.tab_widget.currentIndex() != 0:
-            self.tab_widget.setCurrentIndex(0)
         self.result_output.append(html_text)
 
     def update_progress(self, val, total):
@@ -237,6 +290,9 @@ class RealitySNIHunterApp(QWidget):
         self.geoip_url_edit.setEnabled(not is_running)
         self.geosite_url_edit.setEnabled(not is_running)
         self.download_geoip_btn.setEnabled(not is_running)
+        self.xray_path_edit.setEnabled(not is_running)
+        self.xray_check_btn.setEnabled(not is_running)
+        self.xray_enable_cb.setEnabled(not is_running)
         self.start_btn.setText("🚀 Сканирование...") if is_running else self.start_btn.setText("🚀 Старт сканирования")
 
     def start_scan(self):
@@ -259,6 +315,7 @@ class RealitySNIHunterApp(QWidget):
         self.rows = []
         self.final_sni_output.clear()
         self.result_output.clear()
+        self.xray_results_output.clear()
 
         self.ip = ip
         self.port = int(self.port_edit.text() or 443)
@@ -332,8 +389,7 @@ class RealitySNIHunterApp(QWidget):
             self.sni_worker.start()
 
     def _finish_sni_check(self, ok_snis):
-        self.set_running_state(False)
-        self.status_label.setText("✅ Все задачи завершены!")
+        self.status_label.setText("✅ TLS проверка завершена!")
 
         self.final_sni_output.clear()
         self.final_sni_output.append("🔥 **Лучшие SNI, успешно работающие с целевым IP:**")
@@ -359,6 +415,51 @@ class RealitySNIHunterApp(QWidget):
 
         self.log_write("\n--- АНАЛИЗ ЗАВЕРШЕН ---")
         self.tab_widget.setCurrentIndex(1)
+        
+        # Проверяем, нужно ли запускать Xray проверку
+        if self.xray_enable_cb.isChecked() and best_sni:
+            self._start_xray_check(best_sni)
+        else:
+            self.set_running_state(False)
+
+    def _start_xray_check(self, snis):
+        """Запускает проверку SNI через Xray Reality"""
+        self.status_label.setText("⚡ Запуск Xray Reality проверки...")
+        self.log_write("\n--- ЗАПУСК XRAY REALITY ПРОВЕРКИ ---")
+        
+        xray_path = self.xray_path_edit.text().strip() or "xray.exe"
+        
+        self.progress.setMaximum(len(snis))
+        self.progress.setValue(0)
+        
+        self.xray_worker = XrayCheckerWorker(self.ip, self.port, snis, xray_path)
+        self.xray_worker.log_signal.connect(self.log_write)
+        self.xray_worker.progress_signal.connect(self.update_progress)
+        self.xray_worker.result_signal.connect(self._finish_xray_check)
+        self.xray_worker.start()
+
+    def _finish_xray_check(self, successful_snis):
+        """Обрабатывает результаты Xray проверки"""
+        self.set_running_state(False)
+        self.status_label.setText("✅ Все задачи завершены (включая Xray)!")
+        
+        self.xray_results_output.clear()
+        self.xray_results_output.append("⚡ **Результаты проверки через Xray-core Reality:**\n")
+        
+        if successful_snis:
+            self.xray_results_output.append(f"✅ **Успешно прошли проверку ({len(successful_snis)} SNI):**\n")
+            self.xray_results_output.append("\n".join(successful_snis) + "\n\n")
+            self.xray_results_output.append("🎉 Эти SNI гарантированно работают с Reality протоколом!")
+        else:
+            self.xray_results_output.append("❌ **Ни один SNI не прошел проверку через Xray Reality**\n")
+            self.xray_results_output.append("\nВозможные причины:")
+            self.xray_results_output.append("• Нет действительного публичного ключа сервера")
+            self.xray_results_output.append("• Сервер не настроен с Reality протоколом")
+            self.xray_results_output.append("• Неправильный порт или IP")
+            self.xray_results_output.append("• Xray-core не установлен или недоступен")
+        
+        self.log_write("\n--- XRAY ПРОВЕРКА ЗАВЕРШЕНА ---")
+        self.tab_widget.setCurrentIndex(2)
 
     def save_results(self):
         if not self.rows:
